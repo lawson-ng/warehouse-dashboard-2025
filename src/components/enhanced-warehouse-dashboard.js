@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
+import OrderStaffAllocation from "./OrderStaffAllocation";
+
 import {
   Package,
   Clock,
@@ -52,7 +54,12 @@ import {
 } from "lucide-react";
 
 const WarehouseDashboard = () => {
-  // State management
+  // State
+  const [view, setView] = useState(null); // Khai báo state để điều khiển view
+  const renderView = () => {
+    if (view === "order") return <OrderStaffAllocation />;
+    return null;
+  };
   const [activeTab, setActiveTab] = useState("dashboard");
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
@@ -899,7 +906,10 @@ const WarehouseDashboard = () => {
             <div className="bg-white rounded-lg shadow p-4">
               <h2 className="text-lg font-medium mb-3">Thao tác nhanh</h2>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <button className="p-3 border rounded-lg hover:bg-blue-50 text-sm flex flex-col items-center justify-center">
+                <button
+                  className="p-3 border rounded-lg hover:bg-blue-50 text-sm flex flex-col items-center justify-center"
+                  onClick={() => setView("order")}
+                >
                   <Package className="h-6 w-6 text-blue-500 mb-1" />
                   <span>Quản lý đơn hàng</span>
                 </button>
@@ -1848,6 +1858,9 @@ const WarehouseDashboard = () => {
             </div>
           </div>
         )}
+        <section className="mt-6 border rounded-lg p-4 shadow bg-white">
+          {renderView()}
+        </section>
       </main>
 
       {/* File Upload Modal */}
