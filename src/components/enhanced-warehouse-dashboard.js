@@ -55,11 +55,7 @@ import {
 
 const WarehouseDashboard = () => {
   // State
-  const [view, setView] = useState(null); // Khai báo state để điều khiển view
-  const renderView = () => {
-    if (view === "order") return <OrderStaffAllocation />;
-    return null;
-  };
+
   const [activeTab, setActiveTab] = useState("dashboard");
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
@@ -84,6 +80,18 @@ const WarehouseDashboard = () => {
     prioritizeLocation: true,
     balanceWorkload: true,
   });
+
+  const [view, setView] = useState(null); // Khai báo state để điều khiển view
+  const renderView = () => {
+    if (view === "order") {
+      return (
+        <section className="mt-6 border rounded-lg p-4 shadow bg-white">
+          <OrderStaffAllocation />
+        </section>
+      );
+    }
+    return null;
+  };
 
   // Statistics data
   const [stats, setStats] = useState({
@@ -675,7 +683,8 @@ const WarehouseDashboard = () => {
     const diffMinutes = Math.floor(diffMs / 60000);
     const diffSeconds = Math.floor((diffMs % 60000) / 1000);
 
-    return `${diffMinutes}m ${diffSeconds}s`;
+    const newLocal = `${diffMinutes}m ${diffSeconds}s`;
+    return newLocal;
   };
 
   // Use effect for auto refresh
@@ -1858,9 +1867,7 @@ const WarehouseDashboard = () => {
             </div>
           </div>
         )}
-        <section className="mt-6 border rounded-lg p-4 shadow bg-white">
-          {renderView()}
-        </section>
+        {renderView()}
       </main>
 
       {/* File Upload Modal */}
