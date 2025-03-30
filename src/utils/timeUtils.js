@@ -1,4 +1,4 @@
-// Hàm format thời gian ước tính (đơn vị phút)
+// Hàm format thỞi gian ước tính (đơn vị phút)
 export const formatEstimatedTime = (minutes) => {
   if (!minutes) return "N/A";
 
@@ -10,13 +10,13 @@ export const formatEstimatedTime = (minutes) => {
   const remainingMinutes = minutes % 60;
 
   if (remainingMinutes === 0) {
-    return `${hours} giờ`;
+    return `${hours} giỞ`;
   }
 
-  return `${hours} giờ ${remainingMinutes} phút`;
+  return `${hours} giỞ ${remainingMinutes} phút`;
 };
 
-// Hàm tính thời gian còn lại đến deadline
+// Hàm tính thỞi gian còn lại đến deadline
 export const calculateTimeLeft = (deadline) => {
   if (!deadline) return "";
 
@@ -25,7 +25,7 @@ export const calculateTimeLeft = (deadline) => {
   const difference = deadlineTime - now;
 
   if (difference <= 0) {
-    return "Đã quá hạn";
+    return "Ğã quá hạn";
   }
 
   const hours = Math.floor(difference / (1000 * 60 * 60));
@@ -35,10 +35,10 @@ export const calculateTimeLeft = (deadline) => {
     return `${minutes} phút`;
   }
 
-  return `${hours} giờ ${minutes} phút`;
+  return `${hours} giỞ ${minutes} phút`;
 };
 
-// Hàm format thời gian hoạt động (giờ:phút)
+// Hàm format thỞi gian hoạt động (giỞ:phút)
 export const formatActivityTime = (timestamp) => {
   if (!timestamp) return "";
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import OrderStaffAllocation from "./OrderStaffAllocation";
 
 import {
@@ -55,7 +55,6 @@ import {
 
 const WarehouseDashboard = () => {
   // State
-
   const [activeTab, setActiveTab] = useState("dashboard");
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
@@ -66,6 +65,14 @@ const WarehouseDashboard = () => {
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const [importSuccess, setImportSuccess] = useState(false);
   const [importMessages, setImportMessages] = useState([]);
+  const [selectedOrdersToPrint, setSelectedOrdersToPrint] = useState([]);
+  const [showPrintModal, setShowPrintModal] = useState(false);
+  const [printType, setPrintType] = useState("order"); // "order" or "picking"
+  const [activityHistory, setActivityHistory] = useState([]);
+
+  // State cho các view tích hợp
+  const [view, setView] = useState(null);
+
   const [slaSettings, setSlaSettings] = useState({
     p1Threshold: 2,
     p2Threshold: 4,
@@ -80,18 +87,6 @@ const WarehouseDashboard = () => {
     prioritizeLocation: true,
     balanceWorkload: true,
   });
-
-  const [view, setView] = useState(null); // Khai báo state để điều khiển view
-  const renderView = () => {
-    if (view === "order") {
-      return (
-        <section className="mt-6 border rounded-lg p-4 shadow bg-white">
-          <OrderStaffAllocation />
-        </section>
-      );
-    }
-    return null;
-  };
 
   // Statistics data
   const [stats, setStats] = useState({
@@ -382,6 +377,18 @@ const WarehouseDashboard = () => {
     },
   ]);
 
+  // Hàm render view tích hợp
+  const renderView = () => {
+    if (view === "order") {
+      return (
+        <section className="mt-6 border rounded-lg p-4 shadow bg-white">
+          <OrderStaffAllocation />
+        </section>
+      );
+    }
+    return null;
+  };
+
   // Function to refresh the dashboard data
   const refreshData = () => {
     setRefreshing(true);
@@ -464,6 +471,19 @@ const WarehouseDashboard = () => {
     }));
   };
 
+  // Thêm hoạt động vào lịch sử
+  const addToActivityHistory = (activity) => {
+    // Thêm thông tin nhân viên nếu có
+    if (activity.staffId) {
+      const staff = staffPerformance.find((s) => s.id === activity.staffId);
+      if (staff) {
+        activity.staffName = staff.name;
+      }
+    }
+
+    setActivityHistory((prev) => [activity, ...prev]);
+  };
+
   // Handle file upload
   const handleFileUpload = (e) => {
     const files = Array.from(e.target.files);
@@ -481,10 +501,12 @@ const WarehouseDashboard = () => {
           let previewData = {};
 
           if (fileType === "json") {
+            const jsonData = JSON.parse(event.target.result);
+            const data = jsonData.data || jsonData;
             previewData = {
               type: "json",
-              data: JSON.parse(event.target.result).slice(0, 5),
-              columns: Object.keys(JSON.parse(event.target.result)[0] || {}),
+              data: data.slice(0, 5),
+              columns: Object.keys(data[0] || {}),
             };
           } else if (fileType === "csv") {
             const lines = event.target.result.split("\n");
@@ -544,31 +566,123 @@ const WarehouseDashboard = () => {
 
     setIsProcessingFile(true);
 
-    // Simulate processing
-    setTimeout(() => {
-      // Generate some sample results
-      const newOrders = Math.floor(Math.random() * 10) + 5;
-      const duplicates = Math.floor(Math.random() * 3);
-      const errors = Math.floor(Math.random() * 2);
+    // Đọc file và xử lý
+    const file = uploadedFiles[0];
+    const reader = new FileReader();
 
-      setImportMessages(
-        [
-          `Đã nhập ${newOrders} đơn hàng mới`,
-          duplicates > 0 ? `Phát hiện ${duplicates} đơn trùng lặp` : null,
-          errors > 0 ? `${errors} lỗi trong quá trình nhập` : null,
-        ].filter(Boolean)
-      );
+    reader.onload = (event) => {
+      try {
+        // Parse JSON
+        const jsonData = JSON.parse(event.target.result);
 
-      setImportSuccess(true);
-      setIsProcessingFile(false);
+        // Check if it has the correct structure
+        let orderData = [];
+        if (jsonData.data && Array.isArray(jsonData.data)) {
+          orderData = jsonData.data;
+        } else if (Array.isArray(jsonData)) {
+          orderData = jsonData;
+        } else {
+          throw new Error("Cấu trúc JSON không hợp lệ");
+        }
 
-      // Update order stats to reflect new imports
-      setStats((prev) => ({
-        ...prev,
-        totalOrders: prev.totalOrders + newOrders,
-        pendingOrders: prev.pendingOrders + newOrders,
-      }));
-    }, 2000);
+        // Process orders
+        const newOrders = orderData.map((order) => {
+          // Calculate SLA based on date
+          let sla = "P3";
+          if (order.date_order) {
+            const orderDate = new Date(order.date_order);
+            const now = new Date();
+            const hoursDiff = (now - orderDate) / (1000 * 60 * 60);
+
+            // Determine SLA based on time difference
+            if (hoursDiff > 22) {
+              sla = "P1";
+            } else if (hoursDiff > 20) {
+              sla = "P2";
+            }
+          }
+
+          // Determine product type from detail
+          let productType = "unknown";
+          if (order.detail) {
+            const detail = order.detail.toLowerCase();
+            if (detail.includes("vali")) {
+              productType = "vali";
+            } else if (detail.includes("balo")) {
+              productType = "balo";
+            } else if (
+              detail.includes("tag") ||
+              detail.includes("cover") ||
+              detail.includes("kem")
+            ) {
+              productType = "phụ kiện";
+            }
+          }
+
+          // Calculate time left based on SLA
+          let timeLeft = "24:00:00";
+          if (sla === "P1") {
+            timeLeft = "01:30:00";
+          } else if (sla === "P2") {
+            timeLeft = "03:45:00";
+          }
+
+          return {
+            id: order.id,
+            name: order.name || `Order ${order.id}`,
+            location: order.ecom_recipient_code || "unknown",
+            timeLeft,
+            sla,
+            detail: order.detail || "",
+            status: "pending",
+            productType,
+            complexity:
+              order.detail && order.detail.split(",").length > 1
+                ? "trung bình"
+                : "đơn giản",
+            assignedTo: null,
+            priority: sla === "P1" ? 95 : sla === "P2" ? 80 : 60,
+          };
+        });
+
+        // Update orders state
+        setPriorityOrders((prev) => [...prev, ...newOrders]);
+
+        // Update stats
+        setStats((prev) => ({
+          ...prev,
+          totalOrders: prev.totalOrders + newOrders.length,
+          pendingOrders: prev.pendingOrders + newOrders.length,
+          p1Orders:
+            prev.p1Orders + newOrders.filter((o) => o.sla === "P1").length,
+          p2Orders:
+            prev.p2Orders + newOrders.filter((o) => o.sla === "P2").length,
+        }));
+
+        // Generate success messages
+        setImportMessages([
+          `Đã nhập ${newOrders.length} đơn hàng mới`,
+          `${newOrders.filter((o) => o.sla === "P1").length} đơn P1 (gấp)`,
+          `${newOrders.filter((o) => o.sla === "P2").length} đơn P2 (cảnh báo)`,
+        ]);
+
+        // Add to activity history
+        addToActivityHistory({
+          type: "import",
+          timestamp: new Date().toISOString(),
+          details: `Nhập ${newOrders.length} đơn hàng từ file ${file.name}`,
+        });
+
+        setImportSuccess(true);
+      } catch (error) {
+        console.error("Lỗi khi xử lý file:", error);
+        setImportMessages([`Lỗi khi xử lý file: ${error.message}`]);
+      } finally {
+        setIsProcessingFile(false);
+      }
+    };
+
+    reader.readAsText(file);
   };
 
   // Add a sample processing event
@@ -612,6 +726,15 @@ const WarehouseDashboard = () => {
         return order;
       });
     });
+
+    // Add to activity history
+    addToActivityHistory({
+      type: status,
+      orderId,
+      timestamp: new Date().toISOString(),
+      staffId: staff?.id,
+      details: `${description} - Đơn hàng ${orderId}`,
+    });
   };
 
   // Get description for status updates
@@ -639,6 +762,10 @@ const WarehouseDashboard = () => {
         return "Đơn hàng bị hủy";
       case "issue_detected":
         return "Phát hiện vấn đề";
+      case "print_invoice":
+        return "In đơn hàng";
+      case "print_picking":
+        return "In phiếu soạn hàng";
       default:
         return "Cập nhật trạng thái";
     }
@@ -669,6 +796,9 @@ const WarehouseDashboard = () => {
         return "bg-red-100 text-red-800";
       case "issue_detected":
         return "bg-red-100 text-red-800";
+      case "print_invoice":
+      case "print_picking":
+        return "bg-blue-100 text-blue-800";
       default:
         return "bg-gray-100 text-gray-800";
     }
@@ -683,8 +813,84 @@ const WarehouseDashboard = () => {
     const diffMinutes = Math.floor(diffMs / 60000);
     const diffSeconds = Math.floor((diffMs % 60000) / 1000);
 
-    const newLocal = `${diffMinutes}m ${diffSeconds}s`;
-    return newLocal;
+    return `${diffMinutes}m ${diffSeconds}s`;
+  };
+
+  // Chuyển đổi trạng thái chọn cho đơn hàng
+  const toggleOrderSelection = (orderId) => {
+    if (selectedOrdersToPrint.includes(orderId)) {
+      setSelectedOrdersToPrint(
+        selectedOrdersToPrint.filter((id) => id !== orderId)
+      );
+    } else {
+      setSelectedOrdersToPrint([...selectedOrdersToPrint, orderId]);
+    }
+  };
+
+  // Chọn tất cả đơn hàng để in
+  const selectAllFilteredOrders = () => {
+    setSelectedOrdersToPrint(priorityOrders.map((order) => order.id));
+  };
+
+  // Bỏ chọn tất cả đơn hàng
+  const deselectAllOrders = () => {
+    setSelectedOrdersToPrint([]);
+  };
+
+  // Xử lý in đơn hàng
+  const handlePrintOrders = () => {
+    if (selectedOrdersToPrint.length === 0) return;
+
+    const url = `https://one.tga.com.vn/so/invoicePrint?id=${selectedOrdersToPrint.join(",")}`;
+    window.open(url, "_blank");
+
+    // Ghi nhận hoạt động
+    addToActivityHistory({
+      type: "print_invoice",
+      timestamp: new Date().toISOString(),
+      details: `In ${selectedOrdersToPrint.length} đơn hàng: ${selectedOrdersToPrint.join(", ")}`,
+    });
+
+    // Đóng modal nếu đang mở
+    setShowPrintModal(false);
+
+    // Thêm sự kiện in đơn vào lịch sử xử lý đơn hàng
+    selectedOrdersToPrint.forEach((orderId) => {
+      const orderProcessing = orderProcessingHistory.find(
+        (o) => o.orderId === orderId
+      );
+      if (orderProcessing) {
+        addProcessingEvent(orderId, "print_invoice");
+      }
+    });
+  };
+
+  // Xử lý soạn hàng
+  const handlePrepareOrders = () => {
+    if (selectedOrdersToPrint.length === 0) return;
+
+    const url = `https://one.tga.com.vn/so/prepare?id=${selectedOrdersToPrint.join(",")}`;
+    window.open(url, "_blank");
+
+    // Ghi nhận hoạt động
+    addToActivityHistory({
+      type: "print_picking",
+      timestamp: new Date().toISOString(),
+      details: `Soạn hàng cho ${selectedOrdersToPrint.length} đơn: ${selectedOrdersToPrint.join(", ")}`,
+    });
+
+    // Đóng modal nếu đang mở
+    setShowPrintModal(false);
+
+    // Thêm sự kiện soạn hàng vào lịch sử xử lý đơn hàng
+    selectedOrdersToPrint.forEach((orderId) => {
+      const orderProcessing = orderProcessingHistory.find(
+        (o) => o.orderId === orderId
+      );
+      if (orderProcessing) {
+        addProcessingEvent(orderId, "print_picking");
+      }
+    });
   };
 
   // Use effect for auto refresh
@@ -747,6 +953,15 @@ const WarehouseDashboard = () => {
             >
               <Upload className="h-4 w-4 mr-1" />
               Tải lên
+            </button>
+
+            <button
+              className="px-3 py-1.5 rounded text-sm bg-purple-50 text-purple-600 hover:bg-purple-100 flex items-center"
+              onClick={() => setShowPrintModal(true)}
+              disabled={priorityOrders.length === 0}
+            >
+              <Printer className="h-4 w-4 mr-1" />
+              In đơn
             </button>
           </div>
         </div>
@@ -931,14 +1146,36 @@ const WarehouseDashboard = () => {
                   <span>Tải lên danh sách đơn</span>
                 </button>
 
-                <button className="p-3 border rounded-lg hover:bg-blue-50 text-sm flex flex-col items-center justify-center">
+                <button
+                  className="p-3 border rounded-lg hover:bg-blue-50 text-sm flex flex-col items-center justify-center"
+                  onClick={() => {
+                    setSelectedOrdersToPrint(
+                      priorityOrders
+                        .filter((o) => o.sla === "P1")
+                        .map((o) => o.id)
+                    );
+                    setPrintType("order");
+                    setShowPrintModal(true);
+                  }}
+                >
                   <Printer className="h-6 w-6 text-blue-500 mb-1" />
-                  <span>In đơn hàng</span>
+                  <span>In đơn hàng P1</span>
                 </button>
 
-                <button className="p-3 border rounded-lg hover:bg-blue-50 text-sm flex flex-col items-center justify-center">
-                  <Download className="h-6 w-6 text-blue-500 mb-1" />
-                  <span>Xuất báo cáo</span>
+                <button
+                  className="p-3 border rounded-lg hover:bg-blue-50 text-sm flex flex-col items-center justify-center"
+                  onClick={() => {
+                    setSelectedOrdersToPrint(
+                      priorityOrders
+                        .filter((o) => o.sla === "P1")
+                        .map((o) => o.id)
+                    );
+                    setPrintType("picking");
+                    setShowPrintModal(true);
+                  }}
+                >
+                  <FileText className="h-6 w-6 text-blue-500 mb-1" />
+                  <span>Soạn hàng P1</span>
                 </button>
               </div>
             </div>
@@ -965,6 +1202,9 @@ const WarehouseDashboard = () => {
                         </th>
                         <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Trạng thái
+                        </th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          In/Soạn
                         </th>
                       </tr>
                     </thead>
@@ -1024,13 +1264,40 @@ const WarehouseDashboard = () => {
                                     : "Hoàn thành"}
                             </span>
                           </td>
+                          <td className="px-3 py-3 whitespace-nowrap">
+                            <div className="flex space-x-1">
+                              <button
+                                className="p-1 text-blue-600 hover:text-blue-800"
+                                onClick={() => {
+                                  setSelectedOrdersToPrint([order.id]);
+                                  handlePrintOrders();
+                                }}
+                                title="In đơn hàng"
+                              >
+                                <Printer className="h-4 w-4" />
+                              </button>
+                              <button
+                                className="p-1 text-green-600 hover:text-green-800"
+                                onClick={() => {
+                                  setSelectedOrdersToPrint([order.id]);
+                                  handlePrepareOrders();
+                                }}
+                                title="Soạn hàng"
+                              >
+                                <FileText className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
                 <div className="p-3 border-t">
-                  <button className="text-sm text-blue-600 hover:text-blue-800 flex items-center">
+                  <button
+                    className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
+                    onClick={() => setActiveTab("orders")}
+                  >
                     <span>Xem tất cả đơn hàng</span>
                     <ChevronsRight className="h-4 w-4 ml-1" />
                   </button>
@@ -1054,6 +1321,10 @@ const WarehouseDashboard = () => {
                               <Play className="h-5 w-5 text-yellow-600" />
                             ) : event.status === "picking_completed" ? (
                               <Check className="h-5 w-5 text-green-600" />
+                            ) : event.status === "print_invoice" ? (
+                              <Printer className="h-5 w-5 text-purple-600" />
+                            ) : event.status === "print_picking" ? (
+                              <FileText className="h-5 w-5 text-green-600" />
                             ) : (
                               <Package className="h-5 w-5 text-blue-600" />
                             )}
@@ -1081,13 +1352,183 @@ const WarehouseDashboard = () => {
                         </div>
                       ))
                     )}
+
+                    {/* Thêm hoạt động in đơn/soạn hàng nếu có */}
+                    {activityHistory.slice(0, 2).map((activity, index) => (
+                      <div key={`activity-${index}`} className="flex">
+                        <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center mr-3">
+                          {activity.type === "print_invoice" ? (
+                            <Printer className="h-5 w-5 text-purple-600" />
+                          ) : activity.type === "print_picking" ? (
+                            <FileText className="h-5 w-5 text-green-600" />
+                          ) : activity.type === "import" ? (
+                            <Upload className="h-5 w-5 text-blue-600" />
+                          ) : (
+                            <Activity className="h-5 w-5 text-blue-600" />
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <div className="text-sm">
+                            <span className="text-gray-500">
+                              {activity.details}
+                            </span>
+                            {activity.staffName && (
+                              <span className="text-gray-500">
+                                {" "}
+                                bởi {activity.staffName}
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1 text-xs text-gray-500">
+                            {new Date(activity.timestamp).toLocaleTimeString()}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
                 <div className="p-3 border-t">
-                  <button className="text-sm text-blue-600 hover:text-blue-800 flex items-center">
+                  <button
+                    className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
+                    onClick={() => setActiveTab("processing")}
+                  >
                     <span>Xem tất cả hoạt động</span>
                     <ChevronsRight className="h-4 w-4 ml-1" />
                   </button>
+                </div>
+              </div>
+            </div>
+
+            {/* SLA & Metrics Dashboard */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="bg-white rounded-lg shadow p-4">
+                <h3 className="text-base font-medium mb-3">Phân bổ theo SLA</h3>
+                <div className="h-56 relative">
+                  <div className="flex items-end h-44 w-full space-x-4 justify-around">
+                    <div className="flex flex-col items-center">
+                      <div
+                        className="w-16 bg-red-400 rounded-t"
+                        style={{
+                          height: `${Math.round((stats.p1Orders / stats.totalOrders) * 100) * 2}px`,
+                        }}
+                      ></div>
+                      <div className="text-sm mt-2">P1</div>
+                      <div className="text-xs text-gray-500">
+                        {stats.p1Orders} đơn
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col items-center">
+                      <div
+                        className="w-16 bg-yellow-400 rounded-t"
+                        style={{
+                          height: `${Math.round((stats.p2Orders / stats.totalOrders) * 100) * 2}px`,
+                        }}
+                      ></div>
+                      <div className="text-sm mt-2">P2</div>
+                      <div className="text-xs text-gray-500">
+                        {stats.p2Orders} đơn
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col items-center">
+                      <div
+                        className="w-16 bg-green-400 rounded-t"
+                        style={{
+                          height: `${Math.round(((stats.totalOrders - stats.p1Orders - stats.p2Orders) / stats.totalOrders) * 100) * 2}px`,
+                        }}
+                      ></div>
+                      <div className="text-sm mt-2">P3/P4</div>
+                      <div className="text-xs text-gray-500">
+                        {stats.totalOrders - stats.p1Orders - stats.p2Orders}{" "}
+                        đơn
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-lg shadow p-4">
+                <h3 className="text-base font-medium mb-3">Tuân thủ SLA</h3>
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span>P1 (Gấp)</span>
+                      <span>85%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div
+                        className="bg-red-500 h-2 rounded-full"
+                        style={{ width: "85%" }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span>P2 (Cảnh báo)</span>
+                      <span>92%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div
+                        className="bg-yellow-500 h-2 rounded-full"
+                        style={{ width: "92%" }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span>P3 (Bình thường)</span>
+                      <span>98%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div
+                        className="bg-green-500 h-2 rounded-full"
+                        style={{ width: "98%" }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 p-2 bg-blue-50 rounded text-xs text-blue-700">
+                    <p>Tỷ lệ tuân thủ SLA trung bình: {stats.slaCompliance}%</p>
+                    <p className="mt-1">Mục tiêu: &gt;= 95%</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-lg shadow p-4">
+                <h3 className="text-base font-medium mb-3">Hiệu suất xử lý</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="border rounded-lg p-2">
+                    <div className="text-sm text-gray-500">Thời gian TB</div>
+                    <div className="text-xl font-bold mt-1">
+                      {stats.avgPickingTime} phút
+                    </div>
+                  </div>
+
+                  <div className="border rounded-lg p-2">
+                    <div className="text-sm text-gray-500">
+                      Hiệu suất tối ưu
+                    </div>
+                    <div className="text-xl font-bold mt-1 text-green-600">
+                      {stats.staffUtilization}%
+                    </div>
+                  </div>
+
+                  <div className="border rounded-lg p-2">
+                    <div className="text-sm text-gray-500">Đơn/giờ TB</div>
+                    <div className="text-xl font-bold mt-1">
+                      {Math.round(60 / stats.avgPickingTime)}
+                    </div>
+                  </div>
+
+                  <div className="border rounded-lg p-2">
+                    <div className="text-sm text-gray-500">Phân bổ tự động</div>
+                    <div className="text-xl font-bold mt-1 text-blue-600">
+                      {stats.autoAllocationSuccess}%
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1281,6 +1722,29 @@ const WarehouseDashboard = () => {
                                 <CheckCircle className="h-4 w-4" />
                               </button>
                             )}
+
+                            {/* Thêm nút in đơn và soạn hàng */}
+                            <button
+                              className="text-purple-600 hover:text-purple-900"
+                              title="In đơn hàng"
+                              onClick={() => {
+                                setSelectedOrdersToPrint([order.orderId]);
+                                handlePrintOrders();
+                              }}
+                            >
+                              <Printer className="h-4 w-4" />
+                            </button>
+
+                            <button
+                              className="text-blue-600 hover:text-blue-900"
+                              title="Soạn hàng"
+                              onClick={() => {
+                                setSelectedOrdersToPrint([order.orderId]);
+                                handlePrepareOrders();
+                              }}
+                            >
+                              <FileText className="h-4 w-4" />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1344,529 +1808,213 @@ const WarehouseDashboard = () => {
                 ))}
               </div>
             </div>
-
-            {/* Processing Metrics */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-white rounded-lg shadow p-4">
-                <h3 className="text-base font-medium mb-3">Xử lý theo SLA</h3>
-                <div className="space-y-3">
-                  <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span>P1 (Gấp)</span>
-                      <span>85%</span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div
-                        className="bg-red-500 h-2 rounded-full"
-                        style={{ width: "85%" }}
-                      ></div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span>P2 (Cảnh báo)</span>
-                      <span>92%</span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div
-                        className="bg-yellow-500 h-2 rounded-full"
-                        style={{ width: "92%" }}
-                      ></div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span>P3 (Bình thường)</span>
-                      <span>98%</span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div
-                        className="bg-green-500 h-2 rounded-full"
-                        style={{ width: "98%" }}
-                      ></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-white rounded-lg shadow p-4">
-                <h3 className="text-base font-medium mb-3">
-                  Thời gian xử lý TB
-                </h3>
-                <div className="text-3xl font-bold text-blue-600 mb-2">
-                  3.8 phút
-                </div>
-                <div className="text-sm text-gray-500">
-                  Thời gian xử lý trung bình đơn hàng
-                </div>
-                <div className="mt-3 grid grid-cols-3 text-center">
-                  <div>
-                    <div className="text-xl font-bold text-red-600">2.1</div>
-                    <div className="text-xs text-gray-500">P1</div>
-                  </div>
-                  <div>
-                    <div className="text-xl font-bold text-yellow-600">3.5</div>
-                    <div className="text-xs text-gray-500">P2</div>
-                  </div>
-                  <div>
-                    <div className="text-xl font-bold text-green-600">4.2</div>
-                    <div className="text-xs text-gray-500">P3/P4</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-white rounded-lg shadow p-4">
-                <h3 className="text-base font-medium mb-3">Hiệu suất xử lý</h3>
-                <div className="text-3xl font-bold text-green-600 mb-2">
-                  94%
-                </div>
-                <div className="text-sm text-gray-500">
-                  Đơn hoàn thành trong SLA
-                </div>
-                <div className="mt-2">
-                  <div className="flex justify-between text-sm mb-1">
-                    <span>Mục tiêu: 95%</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div
-                      className="bg-green-500 h-2 rounded-full"
-                      style={{ width: "94%" }}
-                    ></div>
-                  </div>
-                  <div className="absolute" style={{ left: "95%" }}>
-                    <div className="h-full w-0.5 bg-black"></div>
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
         )}
 
-        {/* Settings Tab */}
-        {activeTab === "settings" && (
+        {activeTab === "orders" && (
           <div className="space-y-6">
             <div className="flex justify-between items-center">
-              <h2 className="text-xl font-semibold">Cài đặt SLA và Phân bổ</h2>
-
-              <button className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center">
-                <Save className="h-4 w-4 mr-1" />
-                <span>Lưu cài đặt</span>
-              </button>
-            </div>
-
-            {/* SLA Configuration */}
-            <div className="bg-white rounded-lg shadow">
-              <div className="p-4 border-b">
-                <h3 className="text-lg font-medium flex items-center">
-                  <Clock className="h-5 w-5 mr-2 text-blue-600" />
-                  Cài đặt SLA (Service Level Agreement)
-                </h3>
-              </div>
-
-              <div className="p-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Ngưỡng P1 (giờ)
-                    </label>
-                    <div className="flex items-center">
-                      <input
-                        type="number"
-                        step="0.5"
-                        min="0.5"
-                        className="border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 focus:ring-opacity-50 w-full px-3 py-2"
-                        value={slaSettings.p1Threshold}
-                        onChange={(e) =>
-                          updateSLASettings(
-                            "p1Threshold",
-                            parseFloat(e.target.value)
-                          )
-                        }
-                      />
-                      <span className="ml-2 text-sm text-gray-500">giờ</span>
-                    </div>
-                    <p className="mt-1 text-xs text-gray-500">
-                      Thời gian còn lại để hoàn thành đơn hàng dưới ngưỡng này
-                      sẽ được đánh dấu là P1
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Ngưỡng P2 (giờ)
-                    </label>
-                    <div className="flex items-center">
-                      <input
-                        type="number"
-                        step="0.5"
-                        min="0.5"
-                        className="border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 focus:ring-opacity-50 w-full px-3 py-2"
-                        value={slaSettings.p2Threshold}
-                        onChange={(e) =>
-                          updateSLASettings(
-                            "p2Threshold",
-                            parseFloat(e.target.value)
-                          )
-                        }
-                      />
-                      <span className="ml-2 text-sm text-gray-500">giờ</span>
-                    </div>
-                    <p className="mt-1 text-xs text-gray-500">
-                      Thời gian còn lại từ {slaSettings.p1Threshold} đến{" "}
-                      {slaSettings.p2Threshold} giờ sẽ được đánh dấu là P2
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Ngưỡng P3 (giờ)
-                    </label>
-                    <div className="flex items-center">
-                      <input
-                        type="number"
-                        step="1"
-                        min="1"
-                        className="border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 focus:ring-opacity-50 w-full px-3 py-2"
-                        value={slaSettings.p3Threshold}
-                        onChange={(e) =>
-                          updateSLASettings(
-                            "p3Threshold",
-                            parseFloat(e.target.value)
-                          )
-                        }
-                      />
-                      <span className="ml-2 text-sm text-gray-500">giờ</span>
-                    </div>
-                    <p className="mt-1 text-xs text-gray-500">
-                      Thời gian còn lại từ {slaSettings.p2Threshold} đến{" "}
-                      {slaSettings.p3Threshold} giờ sẽ được đánh dấu là P3
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Ngưỡng cảnh báo (giờ)
-                    </label>
-                    <div className="flex items-center">
-                      <input
-                        type="number"
-                        step="0.5"
-                        min="0.5"
-                        className="border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 focus:ring-opacity-50 w-full px-3 py-2"
-                        value={slaSettings.alertThreshold}
-                        onChange={(e) =>
-                          updateSLASettings(
-                            "alertThreshold",
-                            parseFloat(e.target.value)
-                          )
-                        }
-                      />
-                      <span className="ml-2 text-sm text-gray-500">giờ</span>
-                    </div>
-                    <p className="mt-1 text-xs text-gray-500">
-                      Đơn hàng có thời gian còn lại dưới ngưỡng này sẽ gửi cảnh
-                      báo cho quản lý
-                    </p>
-                  </div>
-
-                  <div className="col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Điều chỉnh theo giờ cao điểm
-                    </label>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs text-gray-500 mb-1">
-                          Giờ bắt đầu
-                        </label>
-                        <input
-                          type="time"
-                          className="border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 focus:ring-opacity-50 w-full px-3 py-2"
-                          value={slaSettings.peakHoursStart}
-                          onChange={(e) =>
-                            updateSLASettings("peakHoursStart", e.target.value)
-                          }
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs text-gray-500 mb-1">
-                          Giờ kết thúc
-                        </label>
-                        <input
-                          type="time"
-                          className="border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 focus:ring-opacity-50 w-full px-3 py-2"
-                          value={slaSettings.peakHoursEnd}
-                          onChange={(e) =>
-                            updateSLASettings("peakHoursEnd", e.target.value)
-                          }
-                        />
-                      </div>
-                    </div>
-                    <p className="mt-1 text-xs text-gray-500">
-                      Trong giờ cao điểm, ngưỡng P1 sẽ được điều chỉnh xuống còn{" "}
-                      {slaSettings.peakHoursP1Threshold} giờ
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-6 p-3 bg-blue-50 border border-blue-100 rounded-lg">
-                  <div className="flex items-start">
-                    <Bell className="h-5 w-5 text-blue-500 mr-2 mt-0.5" />
-                    <div>
-                      <p className="text-sm text-blue-800">
-                        Cài đặt thông báo SLA
-                      </p>
-                      <div className="mt-2 space-y-2">
-                        <label className="flex items-center">
-                          <input
-                            type="checkbox"
-                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                            defaultChecked={true}
-                          />
-                          <span className="ml-2 text-sm text-gray-700">
-                            Gửi thông báo khi đơn P1 mới xuất hiện
-                          </span>
-                        </label>
-
-                        <label className="flex items-center">
-                          <input
-                            type="checkbox"
-                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                            defaultChecked={true}
-                          />
-                          <span className="ml-2 text-sm text-gray-700">
-                            Gửi cảnh báo khi đơn P1 gần hết thời gian
-                          </span>
-                        </label>
-
-                        <label className="flex items-center">
-                          <input
-                            type="checkbox"
-                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                            defaultChecked={true}
-                          />
-                          <span className="ml-2 text-sm text-gray-700">
-                            Gửi báo cáo tuân thủ SLA hàng ngày
-                          </span>
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+              <h2 className="text-xl font-semibold">Quản lý đơn hàng</h2>
+              <div className="flex space-x-3">
+                <button
+                  className="px-3 py-1.5 bg-blue-600 text-white rounded flex items-center"
+                  onClick={() => setView("order")}
+                >
+                  <Package className="h-4 w-4 mr-1" />
+                  <span>Phân bổ đơn</span>
+                </button>
+                <button
+                  className="px-3 py-1.5 bg-purple-600 text-white rounded flex items-center"
+                  onClick={() => {
+                    setSelectedOrdersToPrint([]);
+                    setShowPrintModal(true);
+                  }}
+                >
+                  <Printer className="h-4 w-4 mr-1" />
+                  <span>In/Soạn hàng</span>
+                </button>
               </div>
             </div>
 
-            {/* Order Allocation Configuration */}
-            <div className="bg-white rounded-lg shadow">
-              <div className="p-4 border-b">
-                <h3 className="text-lg font-medium flex items-center">
-                  <Sliders className="h-5 w-5 mr-2 text-blue-600" />
-                  Cài đặt phân bổ đơn hàng
-                </h3>
-              </div>
-
-              <div className="p-4">
-                <div className="flex items-center justify-between mb-4">
-                  <span className="text-sm font-medium text-gray-700">
-                    Tự động phân bổ đơn hàng
-                  </span>
-                  <button
-                    className={`relative inline-flex items-center h-6 rounded-full w-11 ${
-                      slaSettings.autoAssignEnabled
-                        ? "bg-blue-600"
-                        : "bg-gray-200"
-                    }`}
-                    onClick={() =>
-                      updateSLASettings(
-                        "autoAssignEnabled",
-                        !slaSettings.autoAssignEnabled
-                      )
+            <div className="bg-white rounded-lg shadow overflow-hidden">
+              <div className="p-4 flex justify-between items-center">
+                <div className="text-sm flex items-center">
+                  <input
+                    type="checkbox"
+                    className="mr-2"
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        selectAllFilteredOrders();
+                      } else {
+                        deselectAllOrders();
+                      }
+                    }}
+                    checked={
+                      selectedOrdersToPrint.length === priorityOrders.length &&
+                      priorityOrders.length > 0
                     }
-                  >
-                    <span
-                      className={`inline-block w-4 h-4 transform transition rounded-full bg-white ${
-                        slaSettings.autoAssignEnabled
-                          ? "translate-x-6"
-                          : "translate-x-1"
-                      }`}
-                    />
-                  </button>
+                  />
+                  <span>Chọn tất cả ({priorityOrders.length})</span>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Số đơn tối đa mỗi nhân viên
-                    </label>
+                <div className="flex space-x-3">
+                  <div className="relative">
+                    <select
+                      className="appearance-none bg-white border rounded pl-3 pr-8 py-1.5 text-sm"
+                      value="all"
+                    >
+                      <option value="all">Tất cả SLA</option>
+                      <option value="P1">P1 - Gấp</option>
+                      <option value="P2">P2 - Cảnh báo</option>
+                      <option value="P3">P3 - Bình thường</option>
+                      <option value="P4">P4 - Chờ xử lý</option>
+                    </select>
+                    <ChevronDown className="h-4 w-4 absolute right-2.5 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                  </div>
+
+                  <div className="relative">
                     <input
-                      type="number"
-                      min="1"
-                      max="20"
-                      className="border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 focus:ring-opacity-50 w-full px-3 py-2"
-                      value={slaSettings.maxOrdersPerStaff}
-                      onChange={(e) =>
-                        updateSLASettings(
-                          "maxOrdersPerStaff",
-                          parseInt(e.target.value)
-                        )
-                      }
+                      type="text"
+                      placeholder="Tìm kiếm..."
+                      className="pl-8 pr-3 py-1.5 border rounded text-sm"
                     />
-                    <p className="mt-1 text-xs text-gray-500">
-                      Số lượng đơn tối đa mà một nhân viên có thể xử lý cùng lúc
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Số đơn P1 tối đa mỗi nhân viên
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      className="border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 focus:ring-opacity-50 w-full px-3 py-2"
-                      value={slaSettings.maxP1OrdersPerStaff}
-                      onChange={(e) =>
-                        updateSLASettings(
-                          "maxP1OrdersPerStaff",
-                          parseInt(e.target.value)
-                        )
-                      }
-                    />
-                    <p className="mt-1 text-xs text-gray-500">
-                      Số lượng đơn P1 (gấp) tối đa mà một nhân viên có thể xử lý
-                      cùng lúc
-                    </p>
-                  </div>
-
-                  <div className="col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Chiến lược phân bổ
-                    </label>
-
-                    <div className="space-y-3">
-                      <label className="flex items-center">
-                        <input
-                          type="checkbox"
-                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          checked={slaSettings.prioritizeLocation}
-                          onChange={(e) =>
-                            updateSLASettings(
-                              "prioritizeLocation",
-                              e.target.checked
-                            )
-                          }
-                        />
-                        <span className="ml-2 text-sm text-gray-700">
-                          Ưu tiên vị trí (phân bổ đơn cho nhân viên gần khu vực)
-                        </span>
-                      </label>
-
-                      <label className="flex items-center">
-                        <input
-                          type="checkbox"
-                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          checked={slaSettings.balanceWorkload}
-                          onChange={(e) =>
-                            updateSLASettings(
-                              "balanceWorkload",
-                              e.target.checked
-                            )
-                          }
-                        />
-                        <span className="ml-2 text-sm text-gray-700">
-                          Cân bằng khối lượng công việc giữa các nhân viên
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-6">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Trọng số của các tiêu chí phân bổ
-                  </label>
-
-                  <div className="space-y-3">
-                    <div>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span>SLA (Mức độ ưu tiên)</span>
-                        <span>90%</span>
-                      </div>
-                      <div className="w-full bg-gray-200 rounded-full h-2">
-                        <div
-                          className="bg-red-500 h-2 rounded-full"
-                          style={{ width: "90%" }}
-                        ></div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span>Vị trí kho</span>
-                        <span>75%</span>
-                      </div>
-                      <div className="w-full bg-gray-200 rounded-full h-2">
-                        <div
-                          className="bg-blue-500 h-2 rounded-full"
-                          style={{ width: "75%" }}
-                        ></div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span>Kỹ năng nhân viên</span>
-                        <span>60%</span>
-                      </div>
-                      <div className="w-full bg-gray-200 rounded-full h-2">
-                        <div
-                          className="bg-green-500 h-2 rounded-full"
-                          style={{ width: "60%" }}
-                        ></div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span>Cân bằng tải</span>
-                        <span>50%</span>
-                      </div>
-                      <div className="w-full bg-gray-200 rounded-full h-2">
-                        <div
-                          className="bg-yellow-500 h-2 rounded-full"
-                          style={{ width: "50%" }}
-                        ></div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-6 p-3 bg-green-50 border border-green-100 rounded-lg">
-                  <div className="flex items-start">
-                    <Award className="h-5 w-5 text-green-500 mr-2 mt-0.5" />
-                    <div>
-                      <p className="text-sm text-green-800">
-                        Hiệu suất phân bổ tự động
-                      </p>
-                      <p className="text-sm text-green-700 mt-1">
-                        Tỷ lệ phân bổ thành công:{" "}
-                        <span className="font-medium">
-                          {stats.autoAllocationSuccess}%
-                        </span>
-                      </p>
-                      <p className="text-xs text-green-600 mt-1">
-                        Dựa trên 253 đơn hàng được phân bổ trong 7 ngày qua
-                      </p>
-                    </div>
+                    <Search className="h-4 w-4 absolute left-2.5 top-1/2 transform -translate-y-1/2 text-gray-400" />
                   </div>
                 </div>
               </div>
+
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="w-5 px-3 py-2">
+                      <span className="sr-only">Chọn</span>
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Mã đơn / Kênh
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      SLA
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Sản phẩm
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Vị trí kho
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Trạng thái
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Thao tác
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {priorityOrders.map((order) => (
+                    <tr
+                      key={order.id}
+                      className={order.sla === "P1" ? "bg-red-50" : ""}
+                    >
+                      <td className="px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedOrdersToPrint.includes(order.id)}
+                          onChange={() => toggleOrderSelection(order.id)}
+                          className="rounded text-blue-600"
+                        />
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <div className="text-sm font-medium text-gray-900">
+                          {order.id}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {order.productType}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-xs ${
+                            order.sla === "P1"
+                              ? "bg-red-100 text-red-800"
+                              : order.sla === "P2"
+                                ? "bg-yellow-100 text-yellow-800"
+                                : order.sla === "P3"
+                                  ? "bg-green-100 text-green-800"
+                                  : "bg-blue-100 text-blue-800"
+                          }`}
+                        >
+                          {order.sla}
+                        </span>
+                        <div className="text-xs mt-1">{order.timeLeft}</div>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-gray-500 max-w-xs truncate">
+                        {order.detail}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap text-xs">
+                        <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded">
+                          {order.location}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-xs ${
+                            order.status === "pending"
+                              ? "bg-gray-100 text-gray-800"
+                              : order.status === "assigned"
+                                ? "bg-blue-100 text-blue-800"
+                                : order.status === "processing"
+                                  ? "bg-yellow-100 text-yellow-800"
+                                  : "bg-green-100 text-green-800"
+                          }`}
+                        >
+                          {order.status === "pending"
+                            ? "Chờ xử lý"
+                            : order.status === "assigned"
+                              ? "Đã phân công"
+                              : order.status === "processing"
+                                ? "Đang xử lý"
+                                : "Hoàn thành"}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <div className="flex space-x-1">
+                          <button
+                            className="p-1 text-blue-600 hover:text-blue-800"
+                            onClick={() => {
+                              setSelectedOrdersToPrint([order.id]);
+                              handlePrintOrders();
+                            }}
+                            title="In đơn hàng"
+                          >
+                            <Printer className="h-4 w-4" />
+                          </button>
+                          <button
+                            className="p-1 text-green-600 hover:text-green-800"
+                            onClick={() => {
+                              setSelectedOrdersToPrint([order.id]);
+                              handlePrepareOrders();
+                            }}
+                            title="Soạn hàng"
+                          >
+                            <FileText className="h-4 w-4" />
+                          </button>
+                          <button
+                            className="p-1 text-blue-600 hover:text-blue-800"
+                            title="Chi tiết"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
+
+        {/* Hiển thị view tích hợp nếu cần */}
         {renderView()}
       </main>
 
@@ -2128,6 +2276,222 @@ const WarehouseDashboard = () => {
                     </button>
                   </>
                 )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Print/Prepare Modal */}
+      {showPrintModal && (
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto"
+          onClick={() => setShowPrintModal(false)}
+        >
+          <div className="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center">
+            <div className="fixed inset-0 transition-opacity">
+              <div className="absolute inset-0 bg-gray-500 opacity-75"></div>
+            </div>
+
+            <div
+              className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                <div className="sm:flex sm:items-start">
+                  <div className="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-blue-100 sm:mx-0 sm:h-10 sm:w-10">
+                    {printType === "order" ? (
+                      <Printer className="h-6 w-6 text-blue-600" />
+                    ) : (
+                      <FileText className="h-6 w-6 text-green-600" />
+                    )}
+                  </div>
+                  <div className="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
+                    <h3 className="text-lg leading-6 font-medium text-gray-900">
+                      {printType === "order" ? "In đơn hàng" : "Soạn hàng"}
+                    </h3>
+                    <div className="mt-2">
+                      <p className="text-sm text-gray-500">
+                        {printType === "order"
+                          ? "Chọn đơn hàng bạn muốn in."
+                          : "Chọn đơn hàng bạn muốn soạn hàng."}
+                      </p>
+
+                      <div className="mt-4">
+                        <div className="flex space-x-4 mb-4">
+                          <button
+                            className={`px-3 py-1.5 text-sm rounded ${
+                              printType === "order"
+                                ? "bg-blue-600 text-white"
+                                : "bg-gray-200 text-gray-700"
+                            }`}
+                            onClick={() => setPrintType("order")}
+                          >
+                            <Printer className="h-4 w-4 inline mr-1" />
+                            In đơn hàng
+                          </button>
+                          <button
+                            className={`px-3 py-1.5 text-sm rounded ${
+                              printType === "picking"
+                                ? "bg-green-600 text-white"
+                                : "bg-gray-200 text-gray-700"
+                            }`}
+                            onClick={() => setPrintType("picking")}
+                          >
+                            <FileText className="h-4 w-4 inline mr-1" />
+                            Soạn hàng
+                          </button>
+                        </div>
+
+                        <div className="flex justify-between items-center mb-2">
+                          <div className="text-sm">
+                            Đã chọn: {selectedOrdersToPrint.length} đơn
+                          </div>
+
+                          <div className="flex space-x-2">
+                            <button
+                              className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100"
+                              onClick={() => selectAllFilteredOrders()}
+                            >
+                              Chọn tất cả
+                            </button>
+                            <button
+                              className="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100"
+                              onClick={() => deselectAllOrders()}
+                            >
+                              Bỏ chọn
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="border rounded max-h-60 overflow-y-auto">
+                          <table className="min-w-full divide-y divide-gray-200">
+                            <thead className="bg-gray-50 sticky top-0">
+                              <tr>
+                                <th className="w-10 px-3 py-2">
+                                  <input
+                                    type="checkbox"
+                                    className="rounded text-blue-600"
+                                    checked={
+                                      selectedOrdersToPrint.length ===
+                                        priorityOrders.length &&
+                                      priorityOrders.length > 0
+                                    }
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        selectAllFilteredOrders();
+                                      } else {
+                                        deselectAllOrders();
+                                      }
+                                    }}
+                                  />
+                                </th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                  Mã đơn
+                                </th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                  SLA
+                                </th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                  Sản phẩm
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-gray-200">
+                              {priorityOrders.map((order) => (
+                                <tr
+                                  key={order.id}
+                                  className={
+                                    order.sla === "P1" ? "bg-red-50" : ""
+                                  }
+                                >
+                                  <td className="px-3 py-2">
+                                    <input
+                                      type="checkbox"
+                                      className="rounded text-blue-600"
+                                      checked={selectedOrdersToPrint.includes(
+                                        order.id
+                                      )}
+                                      onChange={() =>
+                                        toggleOrderSelection(order.id)
+                                      }
+                                    />
+                                  </td>
+                                  <td className="px-3 py-2 whitespace-nowrap text-sm">
+                                    {order.id}
+                                  </td>
+                                  <td className="px-3 py-2 whitespace-nowrap">
+                                    <span
+                                      className={`px-2 py-0.5 rounded-full text-xs ${
+                                        order.sla === "P1"
+                                          ? "bg-red-100 text-red-800"
+                                          : order.sla === "P2"
+                                            ? "bg-yellow-100 text-yellow-800"
+                                            : order.sla === "P3"
+                                              ? "bg-green-100 text-green-800"
+                                              : "bg-blue-100 text-blue-800"
+                                      }`}
+                                    >
+                                      {order.sla}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-2 text-sm text-gray-500 truncate max-w-xs">
+                                    {order.detail}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+                <button
+                  type="button"
+                  className={`w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 ${
+                    printType === "order"
+                      ? "bg-blue-600 text-white hover:bg-blue-700"
+                      : "bg-green-600 text-white hover:bg-green-700"
+                  } focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+                    printType === "order"
+                      ? "focus:ring-blue-500"
+                      : "focus:ring-green-500"
+                  } sm:ml-3 sm:w-auto sm:text-sm ${
+                    selectedOrdersToPrint.length === 0
+                      ? "opacity-50 cursor-not-allowed"
+                      : ""
+                  }`}
+                  onClick={() => {
+                    if (printType === "order") {
+                      handlePrintOrders();
+                    } else {
+                      handlePrepareOrders();
+                    }
+                  }}
+                  disabled={selectedOrdersToPrint.length === 0}
+                >
+                  {printType === "order" ? (
+                    <>
+                      <Printer className="h-4 w-4 mr-1" />
+                      In đơn
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="h-4 w-4 mr-1" />
+                      Soạn hàng
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
+                  onClick={() => setShowPrintModal(false)}
+                >
+                  Hủy
+                </button>
               </div>
             </div>
           </div>

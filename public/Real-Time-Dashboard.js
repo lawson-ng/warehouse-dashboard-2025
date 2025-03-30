@@ -1,4 +1,4 @@
-import { getRandom, clamp } from "../utils/timeUtils";
+import { getRandom, clamp } from "../src/utils/timeUtils";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Package,
@@ -26,13 +26,13 @@ import {
   ChevronUp,
   ExternalLink,
 } from "lucide-react";
-import { mockStats } from "../data/mockStats";
-import { mockPriorityOrders } from "../data/mockPriorityOrders";
+import { mockStats } from "../src/data/mockStats";
+import { mockPriorityOrders } from "../src/data/mockPriorityOrders";
 import {
   autoAllocateOrders,
   assignOrderToStaff,
   updateStaffPerformance,
-} from "../utils/orderUtils";
+} from "../src/utils/orderUtils";
 
 const WarehouseRealTimeDashboard = () => {
   // State cho dữ liệu real-time

@@ -21,5 +21,12 @@
       "@/*": ["*"]
     }
   },
-  "include": ["src"]
+  "include": [
+    "src",
+    "public/enhanced-warehouse-dashboard.js",
+    "public/OrderSLAM.js",
+    "src/components/sdasdas.js",
+    "public/Dashboard.js",
+    "public/Real-Time-Dashboard.js"
+, "public/Dashboard.tsx", "public/SLA-Management.tsx"  ]
 }
