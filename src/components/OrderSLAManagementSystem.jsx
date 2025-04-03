@@ -55,6 +55,7 @@ const OrderSLAManagementSystem = () => {
   const [selectedOrders, setSelectedOrders] = useState([]);
   const [metrics, setMetrics] = useState(initialMetrics);
 
+  const handleFileSelect = () => {}
   // State cho nhân viên
   const [staff, setStaff] = useState([
     {
